@@ -1,0 +1,529 @@
+---
+title: ""
+page-layout: full
+---
+
+```{python}
+#| label: setup
+import html as html_lib
+from pathlib import Path
+
+import pandas as pd
+import plotly.graph_objects as go
+from IPython.display import HTML, display
+from plotly.subplots import make_subplots
+
+DATA_ROOT = Path("../data") if Path("../data").exists() else Path("data")
+MART_DIR = DATA_ROOT / "mart"
+RAW_DIR = DATA_ROOT / "raw" if (DATA_ROOT / "raw").exists() else DATA_ROOT
+
+kpi_df = pd.read_parquet(MART_DIR / "mart_kpi_summary.parquet")
+pnl_df = pd.read_parquet(MART_DIR / "mart_monthly_pnl.parquet").sort_values("month")
+cf_df = pd.read_parquet(MART_DIR / "mart_monthly_cashflow.parquet").sort_values("month")
+exc_df = pd.read_parquet(MART_DIR / "mart_exceptions.parquet")
+
+# Convert Python Decimal columns to float for Plotly serialization
+for df in (kpi_df, pnl_df, cf_df, exc_df):
+    for col in df.columns:
+        if df[col].dtype == "object" and not df[col].dropna().empty:
+            if hasattr(df[col].dropna().iloc[0], "as_tuple"):
+                df[col] = df[col].astype(float)
+
+for df in (pnl_df, cf_df):
+    df["month_label"] = pd.to_datetime(df["month"]).dt.strftime("%b %Y")
+
+kpi = kpi_df.iloc[0]
+
+INK, SLATE_LIGHT, NAVY, COBALT, INDIGO, BLUE, RED, AMBER, ORANGE = (
+    "#1e293b",
+    "#cbd5e1",
+    "#1e3a8a",
+    "#3b82f6",
+    "#6366f1",
+    "#2563eb",
+    "#dc2626",
+    "#d97706",
+    "#ea580c",
+)
+
+LAYOUT = dict(
+    autosize=True,
+    height=460,
+    font=dict(family="Source Sans 3, Segoe UI, sans-serif", color=INK),
+    plot_bgcolor="#ffffff",
+    paper_bgcolor="#ffffff",
+    margin=dict(l=20, r=30, t=85, b=40),
+    hovermode="x unified",
+    hoverlabel=dict(
+        namelength=-1,
+        bgcolor="rgba(255, 255, 255, 0.96)",
+        bordercolor="#cbd5e1",
+        font=dict(family="Segoe UI, Arial, sans-serif", size=12, color=INK),
+    ),
+    legend=dict(
+        orientation="h",
+        yanchor="bottom",
+        y=1.02,
+        xanchor="center",
+        x=0.5,
+        entrywidth=0.33,
+        entrywidthmode="fraction",
+    ),
+)
+
+CONFIG = {"displayModeBar": False, "responsive": True}
+
+
+def fmt_eur(val: float, decimals: int = 0) -> str:
+    sign = "-" if val < 0 else ""
+    return f"{sign}€{abs(val):,.{decimals}f}"
+```
+
+<header class="exec-header">
+  <h1 class="exec-title">Multi-Currency Treasury Reconciliation &amp; P&amp;L Report</h1>
+  <p class="exec-subtitle">NordicDesk Labs S.L. &middot; 6-Month Executive Close (Oct 2025 &ndash; Mar 2026)</p>
+</header>
+
+::::: {.panel-tabset}
+
+## 1. Reconciled Dashboard (After)
+
+```{python}
+#| label: header-and-kpis
+ebitda_margin = kpi["total_ebitda_eur"] / kpi["total_net_revenue_eur"] * 100
+fee_pct_rev = kpi["total_fees_and_fx_eur"] / kpi["total_net_revenue_eur"] * 100
+cash_impact = kpi["cash_impact_discrepancies_eur"]
+erp_ar_impact = kpi["total_discrepancies_eur"] - cash_impact
+
+display(HTML(f"""
+<div class="panel-box kpi-strip">
+  <div class="kpi-card">
+    <div class="kpi-label">Net Revenue (Ex-VAT)</div>
+    <div class="kpi-value">{fmt_eur(kpi['total_net_revenue_eur'])}</div>
+    <div class="kpi-sub">6M EBITDA: <strong>{fmt_eur(kpi['total_ebitda_eur'])}</strong> ({ebitda_margin:.1f}% margin)</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Payment Fees &amp; FX Friction</div>
+    <div class="kpi-value">{fmt_eur(kpi['total_fees_and_fx_eur'])}</div>
+    <div class="kpi-sub">{fee_pct_rev:.2f}% of Net Revenue (Stripe + Bank FX spread)</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Discrepancies Flagged</div>
+    <div class="kpi-value">{fmt_eur(kpi['total_discrepancies_eur'])}</div>
+    <div class="kpi-sub"><strong>{int(kpi['total_exceptions_count'])}</strong> items &middot; Cash: {fmt_eur(cash_impact)} | ERP/AR: {fmt_eur(erp_ar_impact)}</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Auto-Reconciliation Rate</div>
+    <div class="kpi-value">{kpi['auto_recon_rate_pct']:.1f}%</div>
+    <div class="kpi-sub">Ending Cash (Mar 31): <strong>{fmt_eur(kpi['ending_cash_eur'])}</strong></div>
+  </div>
+</div>
+"""))
+```
+
+:::: {.dash-row}
+
+::: {.panel-box}
+<div class="panel-header-with-action">
+  <button type="button" id="btn-toggle-cost" class="view-toggle-btn">Totals</button>
+  <h3>Cost structure by month (accrual basis, ex-VAT)</h3>
+</div>
+
+<div id="cost-view-monthly">
+
+```{python}
+#| label: cost-structure
+COST_STACK = [
+    ("COGS", "cogs_eur", "#1e3a8a"),
+    ("Stripe & FX", "financial_fees_eur", "#f59e0b"),
+    ("Marketing Ads", "marketing_ads_eur", "#0d9488"),
+    ("Fixed OpEx", "opex_fixed_eur", "#64748b"),
+    ("Unclassified", "unclassified_outflows_eur", "#cbd5e1"),
+]
+months = pnl_df["month_label"]
+cogs_pct = pnl_df["cogs_eur"].abs() / pnl_df["net_revenue_eur"] * 100
+
+fig_cost = make_subplots(specs=[[{"secondary_y": True}]])
+
+for name, col, color in COST_STACK:
+    fig_cost.add_trace(
+        go.Bar(
+            x=months,
+            y=pnl_df[col].abs(),
+            name=name,
+            marker_color=color,
+            hovertemplate=f"{name}: €%{{y:,.0f}}<extra></extra>",
+        ),
+        secondary_y=False,
+    )
+
+fig_cost.add_trace(
+    go.Scatter(
+        x=months,
+        y=cogs_pct,
+        name="COGS % of net revenue",
+        mode="lines+markers",
+        line=dict(color=INK, width=2.5),
+        marker=dict(size=7),
+        hovertemplate="COGS % of net revenue: %{y:.1f}%<extra></extra>",
+    ),
+    secondary_y=True,
+)
+
+fig_cost.update_layout(**LAYOUT, barmode="stack")
+fig_cost.update_yaxes(title_text="Costs (EUR)", tickprefix="€", gridcolor="#f1f5f9", secondary_y=False)
+fig_cost.update_yaxes(
+    title_text="COGS (%)",
+    title_standoff=15,
+    ticksuffix="%",
+    rangemode="tozero",
+    showgrid=False,
+    automargin=True,
+    secondary_y=True,
+)
+fig_cost.show(config=CONFIG)
+```
+
+</div>
+
+<div id="cost-view-totals" style="display: none;">
+
+```{python}
+#| label: cost-structure-totals
+rev_6m = float(pnl_df["net_revenue_eur"].sum())
+cogs_6m = -float(pnl_df["cogs_eur"].abs().sum())
+fees_6m = -float(pnl_df["financial_fees_eur"].abs().sum())
+mkt_6m = -float(pnl_df["marketing_ads_eur"].abs().sum())
+opex_6m = -float(pnl_df["opex_fixed_eur"].abs().sum())
+uncl_6m = -float(pnl_df["unclassified_outflows_eur"].abs().sum())
+net_6m = rev_6m + cogs_6m + fees_6m + mkt_6m + opex_6m + uncl_6m
+
+wf_vals = [rev_6m, cogs_6m, fees_6m, mkt_6m, opex_6m, uncl_6m, net_6m]
+wf_text = [f"{'-' if v < 0 else ''}€{abs(v) / 1000:.1f}k" for v in wf_vals]
+
+fig_totals = go.Figure(
+    go.Waterfall(
+        x=["Net Revenue", "COGS", "Stripe & FX", "Marketing Ads", "Fixed OpEx", "Unclassified", "6M EBITDA"],
+        measure=["relative", "relative", "relative", "relative", "relative", "relative", "total"],
+        y=[rev_6m, cogs_6m, fees_6m, mkt_6m, opex_6m, uncl_6m, 0],
+        text=wf_text,
+        textposition="outside",
+        textfont=dict(size=11.5),
+        connector=dict(line=dict(color="#cbd5e1", width=1.5, dash="dot")),
+        increasing=dict(marker=dict(color=NAVY)),
+        decreasing=dict(marker=dict(color="#64748b")),
+        totals=dict(marker=dict(color=RED if net_6m < 0 else "#0d9488")),
+        hovertemplate="%{x}: <b>%{text}</b><br>Cumulative balance: €%{final:,.0f}<extra></extra>",
+    )
+)
+
+fig_totals.update_layout(
+    **(LAYOUT | {"showlegend": False, "margin": dict(l=20, r=20, t=45, b=55)})
+)
+fig_totals.update_xaxes(
+    ticks="outside",
+    ticklen=10,
+    tickcolor="rgba(0,0,0,0)",
+)
+fig_totals.update_yaxes(
+    title_text="Cumulative (EUR)",
+    tickprefix="€",
+    gridcolor="#f1f5f9",
+    zeroline=True,
+    zerolinecolor="#cbd5e1",
+    range=[min(0, net_6m) * 1.9, rev_6m * 1.15],
+)
+fig_totals.show(config=CONFIG)
+```
+
+</div>
+:::
+
+::: {.panel-box}
+### Cash runway under revenue stress
+
+```{python}
+#| label: cash-runway
+RUNWAY_CAP = 18
+SHOCKS = list(range(5, 55, 5))
+DEFAULT_SHOCK = 30
+months = cf_df["month_label"]
+
+
+def runway(shock_pct: float) -> pd.Series:
+    """Months of cash runway remaining under a revenue inflow shock."""
+    flow = cf_df["net_cashflow_eur"] - shock_pct / 100 * cf_df["cash_inflows_eur"]
+    burn = (-flow).clip(lower=0)
+    return (cf_df["ending_cash_eur"] / burn.where(burn > 0)).fillna(RUNWAY_CAP).clip(upper=RUNWAY_CAP)
+
+
+cash = cf_df["ending_cash_eur"]
+base_runway = runway(0)
+
+
+def make_bar_text(shock_pct: float) -> list[str]:
+    shock_runway = runway(shock_pct)
+    labels = []
+    for i, (v, b, s) in enumerate(zip(cash, base_runway, shock_runway)):
+        b_color = RED if b < 3.0 else BLUE
+        s_color = RED if s < 3.0 else AMBER
+        header = f"<b>€{v / 1000:.1f}k</b> · Current" if i == len(cash) - 1 else f"<b>€{v / 1000:.1f}k</b>"
+        labels.append(
+            f"{header}<br>"
+            f"<span style='color:{b_color}'><b>{b:.1f} mo</b></span>"
+            f"<span style='color:#94a3b8'> | </span>"
+            f"<span style='color:{s_color}'><b>{s:.1f} mo</b></span>"
+        )
+    return labels
+
+
+bar_colors = ["#64748b"] * (len(cash) - 1) + [NAVY]
+
+fig_cf = go.Figure()
+
+fig_cf.add_trace(
+    go.Bar(
+        x=months,
+        y=cash,
+        name="Ending cash (EUR)",
+        marker_color=bar_colors,
+        opacity=0.9,
+        text=make_bar_text(DEFAULT_SHOCK),
+        textposition="outside",
+        textfont=dict(size=11.5),
+        hovertemplate="Ending cash: €%{y:,.0f}<extra></extra>",
+    )
+)
+
+# Legend-only traces representing runway state colors
+fig_cf.add_trace(
+    go.Scatter(
+        x=[None],
+        y=[None],
+        mode="markers",
+        marker=dict(color=BLUE, size=9, symbol="square"),
+        name="Runway · base case",
+    )
+)
+
+for shock in SHOCKS:
+    fig_cf.add_trace(
+        go.Scatter(
+            x=[None],
+            y=[None],
+            mode="markers",
+            marker=dict(color=AMBER, size=9, symbol="square"),
+            visible=(shock == DEFAULT_SHOCK),
+            name=f"Runway · revenue −{shock}%",
+        )
+    )
+
+fig_cf.add_trace(
+    go.Scatter(
+        x=[None],
+        y=[None],
+        mode="markers",
+        marker=dict(color=RED, size=9, symbol="square"),
+        name="Runway < 3.0 mo (alert)",
+    )
+)
+
+slider_steps = [
+    dict(
+        method="update",
+        label=f"−{shock}%",
+        args=[
+            {
+                "visible": [True, True] + [s == shock for s in SHOCKS] + [True],
+                "text": [make_bar_text(shock)] + [None] * (len(SHOCKS) + 2),
+            }
+        ],
+    )
+    for shock in SHOCKS
+]
+
+fig_cf.update_layout(
+    **(LAYOUT | {"margin": dict(l=20, r=20, t=85, b=100)}),
+    sliders=[
+        dict(
+            active=SHOCKS.index(DEFAULT_SHOCK),
+            steps=slider_steps,
+            currentvalue=dict(prefix="Revenue shock: ", font=dict(size=13)),
+            pad=dict(t=30),
+        )
+    ],
+)
+fig_cf.update_yaxes(
+    visible=True,
+    title_text="Ending cash (EUR)",
+    tickprefix="€",
+    dtick=10000,
+    gridcolor="#f1f5f9",
+    range=[0, float(cash.max()) * 1.25],
+)
+fig_cf.show(config=CONFIG)
+```
+
+:::
+
+::::
+
+::: {.panel-box}
+### Accounting exceptions
+
+```{python}
+#| label: exceptions-table
+def severity_badge(sev: str) -> str:
+    return f'<span class="sev-badge sev-{sev.lower()}">{sev}</span>'
+
+
+exc = exc_df.loc[exc_df["amount_eur"].abs().sort_values(ascending=False).index]
+
+exc_table = pd.DataFrame(
+    {
+        "Severity": exc["severity"].map(severity_badge),
+        "Date": pd.to_datetime(exc["event_date"]).dt.strftime("%Y-%m-%d"),
+        "Anomaly": exc["anomaly_type"],
+        "Reference": exc["reference_id"],
+        "Original": [f"{amt:,.2f} {ccy}" for amt, ccy in zip(exc["amount_orig"], exc["currency"])],
+        "Impact (EUR)": exc["amount_eur"].map(lambda v: fmt_eur(v, 2)),
+        "Recommended action": exc["recommended_action"],
+    }
+)
+
+table_html = exc_table.to_html(index=False, escape=False, border=0, justify="center", classes="exceptions")
+display(HTML(f'<div class="table-wrap">{table_html}</div>'))
+```
+:::
+
+## 2. Raw Data (Before)
+
+::: {.panel-box}
+
+```{python}
+#| label: raw-csv-viewer
+MAX_PREVIEW_ROWS = 200
+csv_files = sorted(RAW_DIR.rglob("*.csv")) if RAW_DIR.exists() else []
+
+if not csv_files:
+    display(HTML("<p style='color:#64748b; margin:0;'>No CSV files found in the data directory.</p>"))
+else:
+    buttons_html = []
+    panels_html = []
+    first_meta = ""
+
+    for idx, csv_path in enumerate(csv_files):
+        active_cls = " active" if idx == 0 else ""
+        display_style = "block" if idx == 0 else "none"
+
+        raw_df = pd.read_csv(csv_path, dtype=str, keep_default_na=False)
+        total_rows, total_cols = raw_df.shape
+        preview_df = raw_df.head(MAX_PREVIEW_ROWS)
+
+        meta_text = f"{total_rows:,} rows · {total_cols} cols"
+        if total_rows > MAX_PREVIEW_ROWS:
+            meta_text += f" (showing first {MAX_PREVIEW_ROWS})"
+        if idx == 0:
+            first_meta = meta_text
+
+        buttons_html.append(
+            f'<button type="button" class="raw-file-btn{active_cls}" '
+            f'data-target="raw-pane-{idx}" data-meta="{html_lib.escape(meta_text)}">'
+            f'{html_lib.escape(csv_path.name)}</button>'
+        )
+
+        table_str = preview_df.to_html(index=False, border=0, justify="left", classes="raw-csv-table")
+        panels_html.append(
+            f'<div id="raw-pane-{idx}" class="raw-csv-pane" style="display:{display_style};">'
+            f'<div class="raw-viewer-box">{table_str}</div>'
+            f'</div>'
+        )
+
+    display(HTML(f"""
+    <div class="raw-toolbar">
+      <div class="raw-file-tabs">{''.join(buttons_html)}</div>
+      <div id="raw-file-meta" class="raw-meta">{first_meta}</div>
+    </div>
+    {''.join(panels_html)}
+    """))
+```
+
+:::
+
+:::::
+
+<script>
+document.addEventListener("shown.bs.tab", () => {
+  window.dispatchEvent(new Event("resize"));
+  document.querySelectorAll(".tab-pane.active .js-plotly-plot").forEach(el => {
+    if (window.Plotly) Plotly.Plots.resize(el);
+  });
+});
+
+document.addEventListener("DOMContentLoaded", () => {
+  // Toggle Monthly / Totals view in Cost Structure
+  const toggleBtn = document.getElementById("btn-toggle-cost");
+  const monthlyView = document.getElementById("cost-view-monthly");
+  const totalsView = document.getElementById("cost-view-totals");
+
+  if (toggleBtn && monthlyView && totalsView) {
+    toggleBtn.addEventListener("click", () => {
+      const showingTotals = totalsView.style.display !== "none";
+      totalsView.style.display = showingTotals ? "none" : "block";
+      monthlyView.style.display = showingTotals ? "block" : "none";
+      toggleBtn.textContent = showingTotals ? "Totals" : "Monthly";
+
+      const activePlot = (showingTotals ? monthlyView : totalsView).querySelector(".js-plotly-plot");
+      if (activePlot && window.Plotly) {
+        Plotly.Plots.resize(activePlot);
+      }
+    });
+  }
+
+  // Column sorting for Accounting Exceptions
+  const rank = { CRITICAL: 3, HIGH: 2, MEDIUM: 1, LOW: 0 };
+  document.querySelectorAll("table.exceptions th").forEach((th, i) => {
+    th.addEventListener("click", () => {
+      const table = th.closest("table");
+      const tbody = table.querySelector("tbody");
+      const asc = th.dataset.sort !== "asc";
+
+      table.querySelectorAll("th").forEach(h => delete h.dataset.sort);
+      th.dataset.sort = asc ? "asc" : "desc";
+
+      const val = (tr) => {
+        const t = tr.children[i].textContent.trim();
+        if (i === 0) return rank[t] ?? -1;
+        if (i === 4 || i === 5) return parseFloat(t.replace(/[€,]/g, "")) || 0;
+        return t;
+      };
+
+      Array.from(tbody.querySelectorAll("tr"))
+        .sort((a, b) => {
+          const va = val(a), vb = val(b);
+          const c = typeof va === "number" ? va - vb : va.localeCompare(vb);
+          return asc ? c : -c;
+        })
+        .forEach(tr => tbody.appendChild(tr));
+    });
+  });
+
+  // Raw CSV file switcher
+  const rawBtns = document.querySelectorAll(".raw-file-btn");
+  const rawMeta = document.getElementById("raw-file-meta");
+  rawBtns.forEach(btn => {
+    btn.addEventListener("click", () => {
+      rawBtns.forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+
+      document.querySelectorAll(".raw-csv-pane").forEach(pane => {
+        pane.style.display = pane.id === btn.dataset.target ? "block" : "none";
+      });
+
+      if (rawMeta && btn.dataset.meta) {
+        rawMeta.textContent = btn.dataset.meta;
+      }
+    });
+  });
+});
+</script>

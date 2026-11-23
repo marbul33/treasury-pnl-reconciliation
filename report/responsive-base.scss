@@ -1,0 +1,51 @@
+/*-- scss:rules --*/
+
+:root {
+  --page-max: 2400px;                        /* Max width on ultrawide displays */
+  --page-pad: clamp(0.75rem, 1.5vw, 2rem);   /* Fluid horizontal padding */
+}
+
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body { overflow-x: clip; }                   /* Prevent unintended horizontal scroll */
+*, *::before, *::after { box-sizing: border-box; }
+
+/* Full-width layout (requires page-layout: custom or full) */
+#quarto-content.page-layout-custom,
+#quarto-content.page-layout-full {
+  display: block !important;                 /* Override Quarto's default CSS grid */
+  width: 100% !important;
+  max-width: var(--page-max) !important;
+  margin: 0 auto !important;
+  padding: 1rem var(--page-pad) 2.5rem !important;
+}
+#quarto-content.page-layout-custom main.content,
+#quarto-content.page-layout-full main.content {
+  display: block !important;
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* Auto-fit responsive grid (Usage: :::: {.fluid-grid} ... ::::) */
+.fluid-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+  align-items: stretch;
+}
+.fluid-grid > * { min-width: 0; margin-bottom: 0; }
+
+/* Fluid media and charts */
+img, video { max-width: 100%; height: auto; }
+iframe { max-width: 100%; }
+.plotly-graph-div, .js-plotly-plot { width: 100% !important; max-width: 100%; }
+
+/* Interactive tables (itables / DataTables) */
+.dataTables_wrapper, .dt-container { width: 100%; max-width: 100%; }
+
+/* Contain wide Markdown tables and code blocks */
+.cell-output-display:has(> table:not(.dataTable)) { overflow-x: auto; }
+pre, pre code { max-width: 100%; overflow-x: auto; }
+main { overflow-wrap: break-word; }

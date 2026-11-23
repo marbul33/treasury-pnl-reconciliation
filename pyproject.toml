@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=69.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "treasury-pnl-reconciliation"
+version = "0.1.0"
+description = "Multi-currency treasury reconciliation and monthly P&L engine with Python, DuckDB, and Quarto."
+requires-python = ">=3.11"
+dependencies = [
+    "duckdb>=1.1.0",
+    "pandas>=2.2.0",
+    "numpy>=2.0.0",
+    "plotly>=5.24.0",
+    "itables>=2.2.0",
+    "jupyter>=1.1.0",
+    "nbformat>=5.10.0",
+    "pyyaml>=6.0.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "ruff>=0.7.0",
+]
+
+[tool.setuptools]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"

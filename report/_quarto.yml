@@ -1,0 +1,18 @@
+project:
+  type: default
+
+execute:
+  echo: false
+  warning: false
+  message: false
+
+format:
+  html:
+    theme:
+      - default
+      - custom.scss
+      - responsive-base.scss
+    page-layout: custom
+    embed-resources: true
+    toc: false
+    title-block-style: none

@@ -1,0 +1,24 @@
+# Python environments and cache
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Generated data
+data/raw/*.csv
+data/raw/*.json
+data/mart/*
+!data/raw/.gitkeep
+!data/mart/.gitkeep
+
+# Quarto temporary files
+report/.quarto/
+report/*_files/
+*.ipynb
+
+# System and editor
+.DS_Store
+Thumbs.db
+.vscode/
